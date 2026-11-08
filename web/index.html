@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Aquabyte</title>
+<style>
+  html,body{margin:0;padding:0;background:transparent !important;overflow:hidden;
+    font-family:"NanumSquareRound","Noto Sans CJK KR",-apple-system,sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  canvas{display:block;cursor:pointer}
+  body.demo{width:100vw;height:100vh;
+    background:
+      radial-gradient(1000px 620px at 14% 6%, #35496f 0%, transparent 60%),
+      radial-gradient(900px 600px at 88% 90%, #1c4b4e 0%, transparent 58%),
+      linear-gradient(140deg,#101724 0%,#1c2436 48%,#0a0f17 100%);}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="./live.js" onerror="window.LIVE_FAILED=true"></script>
+<script>
+/* ─────────────────────────────────────────────────────────────
+   Aquabyte character
+   One bottle = 500 ml. It evaporates and heats up as you burn tokens.
+   When it runs dry the bottle faints and a new one drops in.
+   ───────────────────────────────────────────────────────────── */
+const DEF = {tokens:0, raw_tokens:0, ml:0, wh:0, bottles:0, ramen:0, boil1L:0, sauna:0,
+             phone:0, coffee:0, parts:{}, date:"--", ts:0};
+let LIVE = Object.assign({}, DEF, window.LIVE || {});
+const LANG = (((new URLSearchParams(location.search).get('lang'))||navigator.language||'en').slice(0,2)||'en').toLowerCase();
+const STR = {
+  ko:{hot:"아… 뜨거워!", thirsty:"물… 마실래…", cheer:"오늘도 화이팅!", faint:"으앙… 다 썼다",
+      news:"새 병 도착!", burst:"토큰 폭발!", bottle:"오늘의 물병",
+      weighted:"가중 토큰 (연산량)", raw:"원시 토큰", water:"물 소비", power:"전기 소비",
+      exhaust:"서버 배기 온도", btemp:"병 온도", thisb:"이 병", withheat:"이 열로 할 수 있는 것",
+      ramen:"라면", boil:"물 1L 끓이기", sauna:"사우나", phone:"폰 충전", coffee:"커피",
+      close:"클릭하면 닫힙니다", bottles:"병", reset:"현지 00:00에 리셋", day:"새 날 시작!",
+      perM:"토큰 100만 ≈ 물 320 ml", est:"추정치", local:"로컬 로그만 읽음", lag:"반영 지연"},
+  pl:{hot:"Ale gorąco!", thirsty:"Wody…", cheer:"Damy radę!", faint:"Uff… pusto",
+      news:"Nowa butelka!", burst:"Bum tokenów!", bottle:"Dzisiejsza butelka",
+      weighted:"Tokeny ważone", raw:"Tokeny surowe", water:"Woda", power:"Prąd",
+      exhaust:"Temp. serwera", btemp:"Temp. butelki", thisb:"Ta butelka", withheat:"Za to ciepło",
+      ramen:"zupki", boil:"zagotuj 1 l", sauna:"sauna", phone:"ładowania", coffee:"kawy",
+      close:"Kliknij, aby zamknąć", bottles:"but.", reset:"reset o 00:00", day:"Nowy dzień!",
+      perM:"1 mln tokenów ≈ 320 ml", est:"Szacunki", local:"tylko lokalne logi", lag:"opóźnienie"},
+  en:{hot:"So hot…!", thirsty:"Water…?", cheer:"Let's go!", faint:"Ugh… empty",
+      news:"New bottle!", burst:"Token burst!", bottle:"Today's bottle",
+      weighted:"Weighted tokens", raw:"Raw tokens", water:"Water", power:"Power",
+      exhaust:"Server exhaust", btemp:"Bottle temp", thisb:"This bottle", withheat:"With this heat",
+      ramen:"ramen", boil:"boil 1 L", sauna:"sauna", phone:"phone charges", coffee:"coffee",
+      close:"Click to close", bottles:"bottles", reset:"resets at 00:00", day:"New day!",
+      perM:"1M tokens ≈ 320 ml", est:"Estimates", local:"local logs only", lag:"refresh lag"}
+};
+function BOT(n){ return LANG==='ko' ? n+'병' : n+' '+T('bottles'); }
+function EQB(n){
+  if(LANG==='ko') return `= 생수 ${n}병`;
+  if(LANG==='pl') return `= ${n} butelki`;
+  return `= ${n} bottles of water`;
+}
+function T(k){ return (STR[LANG] && STR[LANG][k]) || STR.en[k] || k; }
+const Q = new URLSearchParams(location.search);
+const DEMO = Q.get("demo")==="1";
+const BG = Q.get("bg")==="1";              // showcase background
+const PANEL = Q.get("panel")==="1";      // detail panel window
+const ELECTRON = Q.get("electron")==="1" || !!window.pet;  // desktop widget mode
+const FAST = Q.get("fast")==="1";          // fast cycle for demos
+const RATE = Q.get("rate") ? parseFloat(Q.get("rate")) : (FAST ? 0.085 : 0.0045);
+const SIM = FAST || !!Q.get("rate");   // simulation mode (otherwise follows real logs)
+if (DEMO || BG) document.body.classList.add("demo");
+
+const CO = {w:150, h:186};                  // collapsed size
+const OP = {w:372, h:372};                  // expanded size
+let open = Q.get("open")==="1";
+let W = (PANEL||DEMO||BG) ? innerWidth : CO.w;
+let H = (PANEL||DEMO||BG) ? innerHeight : CO.h;
+
+const cv = document.getElementById("c");
+function sizeCanvas(){
+  W = (PANEL||DEMO||BG) ? innerWidth : CO.w;
+  H = (PANEL||DEMO||BG) ? innerHeight : CO.h;
+  cv.width = W*2; cv.height = H*2; cv.style.width=W+"px"; cv.style.height=H+"px";
+  g.setTransform(1,0,0,1,0,0); g.scale(2,2);
+}
+const g = cv.getContext("2d");
+let live = {W:0,H:0};
+function sizeCanvas2(){ sizeCanvas(); live.W=W; live.H=H; }
+sizeCanvas2();
+window.addEventListener("resize", ()=>{ if(DEMO) sizeCanvas2(); });
+
+/* ── state ──────────────────────────────────────────────────── */
+const BOTTLE_ML = 500;
+const st = {
+  t0: performance.now(), phase:'enter', pt:0,
+  f: Q.get('f') ? parseFloat(Q.get('f')) : (FAST ? 1 : 1 - (LIVE.bottles % 1)),
+  heat: 0, blink:0, nextBlink:2.2,
+  bottleCount: Math.floor(LIVE.bottles),
+  ml: LIVE.ml, wh: LIVE.wh,
+  steam: [], sweat: [], splash: [], spark: [],
+  tilt: 0, scaleY: 1, dizz:0, temp: 31.5,
+  burn: 0, matrix: [], embers: [], hover: false, lastTok: LIVE.tokens, boil: 0, lastTokAt: 0, lag: null,
+  msg:null, msgT:0,
+  clickT: 0
+};
+st.heat = (1-st.f)*0.85;
+
+/* ── utils ──────────────────────────────────────────────────── */
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const lerp=(a,b,t)=>a+(b-a)*t;
+const E = {out:t=>1-Math.pow(1-t,3), in:t=>t*t*t, back:t=>1+2.7*Math.pow(t-1,3)+1.7*Math.pow(t-1,2)};
+function rr(x,y,w,h,r){g.beginPath();g.roundRect(x,y,w,h,r);}
+function txt(s,x,y,size,color,weight="400",align="left",base="alphabetic"){
+  g.fillStyle=color; g.font=`${weight} ${size}px "NanumSquareRound",-apple-system,sans-serif`;
+  g.textAlign=align; g.textBaseline=base; g.fillText(s,x,y);
+}
+function say(text, dur=2.2){ st.msg=text; st.msgT=dur; }
+
+/* ── bottle character ───────────────────────────────────────── */
+const BW = 54, BH = 88;      // bottle body
+function bottleBodyPath(w,h,r){
+  g.beginPath();
+  g.moveTo(-w/2+r, -h);
+  g.lineTo(w/2-r, -h);
+  g.quadraticCurveTo(w/2, -h, w/2, -h+r);
+  g.lineTo(w/2, -r);
+  g.quadraticCurveTo(w/2, 0, w/2-r, 0);
+  g.lineTo(-w/2+r, 0);
+  g.quadraticCurveTo(-w/2, 0, -w/2, -r);
+  g.lineTo(-w/2, -h+r);
+  g.quadraticCurveTo(-w/2, -h, -w/2+r, -h);
+  g.closePath();
+}
+
+function drawBottle(cx, by, s, o){
+  const f = clamp(o.f,0,1);
+  const heat = clamp(o.heat,0,1);
+  const tk = o.tilt ? clamp(Math.abs(o.tilt)/1.42,0,1) : 0;
+  // shadow (world coords)
+  g.save(); g.globalAlpha=.28; g.fillStyle="#000";
+  g.beginPath(); g.ellipse(cx + 10*tk, by+5, BW*.52 + 16*tk, 5+2*tk, 0,0,7); g.fill(); g.restore();
+  // puddle when fainted
+  if(tk>0.6){
+    const k = clamp((tk-0.6)/0.4,0,1);
+    g.fillStyle=`rgba(110,200,245,${0.40*k})`;
+    g.beginPath(); g.ellipse(cx+4, by+3, 30*k+8, 5, 0,0,7); g.fill();
+  }
+
+  g.save();
+  if(o.tilt){
+    g.translate(cx + 26*tk, by - 25*tk);
+    g.scale(s, s*o.scaleY);
+    g.rotate(o.tilt);
+  } else {
+    g.translate(cx, by);
+    g.scale(s, s*o.scaleY);
+  }
+
+  // glass body (always clear)
+  bottleBodyPath(BW,BH,20);
+  const bg = g.createLinearGradient(0,-BH,0,0);
+  bg.addColorStop(0, "#f6fdff");
+  bg.addColorStop(1, "#dcf0ff");
+  g.fillStyle = bg; g.fill();
+
+  // water
+  const wh = (BH-8)*f;
+  if(wh > 1){
+    g.save(); bottleBodyPath(BW,BH,20); g.clip();
+    const wy = -wh;
+    const wg = g.createLinearGradient(0,wy,0,0);
+    wg.addColorStop(0, "rgba(104,212,255,.95)");
+    wg.addColorStop(1, "rgba(34,140,224,.97)");
+    g.fillStyle = wg;
+    const wob = Math.sin(performance.now()/(360+heat*160))*(1.4+heat*1.6);
+    g.beginPath(); g.moveTo(-BW/2,4); g.lineTo(-BW/2, wy+wob);
+    g.quadraticCurveTo(0, wy-wob, BW/2, wy+wob); g.lineTo(BW/2,4); g.closePath(); g.fill();
+    // water glows red when hot
+    if(heat>0.02){ g.fillStyle=`rgba(255,110,80,${0.12*heat})`; g.fillRect(-BW/2, wy-2, BW, wh+6); }
+    // water surface highlight
+    g.strokeStyle="rgba(240,253,255,.9)"; g.lineWidth=1.6;
+    g.beginPath(); g.moveTo(-BW/2+2, wy+wob); g.quadraticCurveTo(0, wy-wob, BW/2-2, wy+wob); g.stroke();
+    g.restore();
+  }
+
+  // body heat overlay
+  if(heat>0.02){
+    g.save(); bottleBodyPath(BW,BH,20); g.clip();
+    const hg=g.createRadialGradient(0,-BH*0.45,6,0,-BH*0.45,BW*0.95);
+    hg.addColorStop(0,`rgba(255,130,100,${0.10*heat})`);
+    hg.addColorStop(1,`rgba(255,80,60,${0.26*heat})`);
+    g.fillStyle=hg; g.fillRect(-BW/2,-BH,BW,BH);
+    g.restore();
+  }
+
+  // glass highlight
+  g.strokeStyle="rgba(255,255,255,.55)"; g.lineWidth=2;
+  g.beginPath(); g.moveTo(-BW/2+9,-BH+22); g.lineTo(-BW/2+9,-18); g.stroke();
+  // outline
+  bottleBodyPath(BW,BH,20);
+  g.strokeStyle=`rgba(${Math.round(116+110*heat)},${Math.round(176-56*heat)},${Math.round(206-66*heat)},.9)`; g.lineWidth=2.2; g.stroke();
+
+  // cap
+  g.save();
+  rr(-14,-BH-11,28,13,5);
+  const capg=g.createLinearGradient(0,-BH-11,0,-BH+2);
+  capg.addColorStop(0,"#8fd3ff"); capg.addColorStop(1,"#4aa8e0");
+  g.fillStyle = heat>0.5 ? `rgb(${Math.round(255)},${Math.round(150-30*heat)},120)` : capg;
+  g.fill(); g.strokeStyle="rgba(70,140,190,.6)"; g.lineWidth=1.6; g.stroke();
+  g.restore();
+
+  // face
+  const ey = -BH*0.60, ex = 9.5;
+  const expr = o.expr;
+  g.lineCap="round";
+  if(expr==='faint'){
+    g.strokeStyle="#3b4a5b"; g.lineWidth=2.4;
+    [-1,1].forEach(sx=>{
+      g.beginPath(); g.moveTo(sx*ex-4,ey-4); g.lineTo(sx*ex+4,ey+4);
+      g.moveTo(sx*ex+4,ey-4); g.lineTo(sx*ex-4,ey+4); g.stroke();
+    });
+    // open mouth + tongue
+    g.fillStyle="#b8566a"; g.beginPath(); g.ellipse(0,-BH*0.365,4.4,5.2,0,0,7); g.fill();
+    g.fillStyle="#f0909c"; g.beginPath(); g.ellipse(0.4,-BH*0.345,2.5,2.9,0,0,7); g.fill();
+  } else if(expr==='dizzy'){
+    g.strokeStyle="#4a5b70"; g.lineWidth=1.7;
+    [-1,1].forEach(sx=>{
+      g.beginPath();
+      for(let a=0;a<8.2;a+=0.25){ const r=0.55+a*0.62; const px=sx*ex+Math.cos(a)*r, py=ey+Math.sin(a)*r;
+        a===0?g.moveTo(px,py):g.lineTo(px,py); }
+      g.stroke();
+    });
+    g.fillStyle="#c96a76"; g.beginPath(); g.ellipse(0,-BH*0.36,4,3,0,0,7); g.fill();
+  } else {
+    // eyes (blink)
+    const blink = o.blink;
+    const eyeH = blink>0.5 ? 1.2 : 7.2;
+    const closedHappy = expr==='happy' && blink<0.5;
+    [-1,1].forEach(sx=>{
+      if(expr==='hot' && !closedHappy){
+        // squeezed eyes ^
+        g.strokeStyle="#37485c"; g.lineWidth=2.3; g.beginPath();
+        g.moveTo(sx*ex-4.4, ey+2.6); g.lineTo(sx*ex, ey-3.2); g.lineTo(sx*ex+4.4, ey+2.6); g.stroke();
+      } else if(closedHappy){
+        g.strokeStyle="#37485c"; g.lineWidth=2.2; g.beginPath();
+        g.arc(sx*ex, ey+2, 4.6, Math.PI*1.12, Math.PI*1.88); g.stroke();
+      } else {
+        g.fillStyle="#2f4055"; g.beginPath(); g.ellipse(sx*ex, ey, 3.9, eyeH/2+0.4, 0, 0, 7); g.fill();
+        if(eyeH>4){ g.fillStyle="rgba(255,255,255,.9)"; g.beginPath(); g.arc(sx*ex-1.2, ey-1.6, 1.25,0,7); g.fill(); }
+      }
+    });
+    // blush
+    const blush = clamp(0.25+heat*0.75,0,1);
+    [-1,1].forEach(sx=>{
+      g.fillStyle=`rgba(255,138,158,${0.30+0.32*blush})`;
+      g.beginPath(); g.ellipse(sx*16.5, ey+7.5, 5.6, 3.6, 0, 0, 7); g.fill();
+    });
+    // mouth
+    g.strokeStyle="#37485c"; g.lineWidth=2.1;
+    if(expr==='hot'){
+      g.fillStyle="#e0808f"; g.beginPath(); g.ellipse(0, ey+11.5, 4.4, 5.2, 0, 0, 7); g.fill();
+    } else if(expr==='tired'){
+      g.beginPath(); g.moveTo(-4.6, ey+11); g.quadraticCurveTo(0, ey+13.6, 4.6, ey+11); g.stroke();
+    } else if(expr==='surprised'){
+      g.fillStyle="#e0808f"; g.beginPath(); g.ellipse(0, ey+11.5, 3.1, 3.9, 0, 0, 7); g.fill();
+    } else {
+      g.beginPath(); g.arc(0, ey+8.6, 4.8, 0.25, Math.PI-0.25); g.stroke();
+    }
+  }
+
+  // sweat drop
+  if(o.sweat){
+    g.fillStyle="rgba(140,215,255,.95)";
+    g.beginPath(); g.ellipse(-BW/2+4, -BH*0.74, 2.6, 3.6, -0.3, 0, 7); g.fill();
+  }
+  // arms + fan
+  g.strokeStyle="#5fa6d4"; g.lineWidth=3.8; g.lineCap="round";
+  g.beginPath(); g.moveTo(-BW/2+3,-BH*0.40); g.lineTo(-BW/2-5,-BH*0.30); g.stroke();
+  g.beginPath(); g.arc(-BW/2-5.6,-BH*0.285,2.2,0,7); g.fillStyle="#5fa6d4"; g.fill();
+  if(o.fan){
+    const a = Math.sin(performance.now()/110)*0.5;
+    g.save(); g.translate(BW/2+2,-BH*0.44); g.rotate(-0.5+a);
+    g.strokeStyle="#5fa6d4"; g.lineWidth=3.8;
+    g.beginPath(); g.moveTo(0,0); g.lineTo(6,-6); g.stroke();
+    g.fillStyle="rgba(255,225,150,.95)";
+    g.beginPath(); g.arc(8,-9,8,-1.0,1.1); g.lineTo(6,-6); g.closePath(); g.fill();
+    g.strokeStyle="rgba(200,160,90,.8)"; g.lineWidth=1.2; g.stroke();
+    g.restore();
+  } else {
+    g.strokeStyle="#5fa6d4"; g.lineWidth=3.8;
+    g.beginPath(); g.moveTo(BW/2-3,-BH*0.40); g.lineTo(BW/2+5,-BH*0.31); g.stroke();
+    g.beginPath(); g.arc(BW/2+5.6,-BH*0.295,2.2,0,7); g.fillStyle="#5fa6d4"; g.fill();
+  }
+  g.restore();
+}
+
+/* ── effects ────────────────────────────────────────────────── */
+function spawnSteam(cx, top){
+  if(st.steam.length<22 && Math.random()<0.22+st.heat*0.5)
+    st.steam.push({x:cx+rnd(-8,8), y:top+rnd(-2,4), r:rnd(1.3,2.4), a:rnd(.16,.30), vy:rnd(-16,-30), vx:rnd(-6,6), life:1});
+}
+function drawSteam(){
+  for(const s of st.steam){
+    g.beginPath(); g.arc(s.x,s.y,s.r,0,7);
+    g.fillStyle=`rgba(255,255,255,${s.a*s.life*0.95})`; g.fill();
+  }
+}
+
+/* ── state machine ──────────────────────────────────────────── */
+function tick(dt, t){
+  st.pt += dt;
+
+  // simulation: tokens -> evaporation
+  if(SIM){
+    if(st.phase==='alive' || st.phase==='enter'){
+      st.f -= RATE*dt;
+      if(st.f<=0){ st.f=0; startFaint(); }
+    }
+  } else {
+    // real data: the current bottle is empty by the fractional part of today's bottles
+    const nb = Math.floor(LIVE.bottles);
+    if(nb > st.bottleCount && st.phase==='alive'){ st.bottleCount = nb; startFaint(); return; }
+    st.bottleCount = nb;
+    const realF = 1 - (LIVE.bottles % 1);
+    if(st.phase==='alive' || st.phase==='enter'){
+      st.f = lerp(st.f, realF, dt*0.7);
+      if(st.f < 0.012) startFaint();
+    }
+  }
+
+  st.temp = 31.5 + st.heat*14.5;   // server exhaust temperature (estimate)
+
+  // temperature
+  const targetHeat = clamp(Math.max((1-st.f)*0.9, st.burn*0.85) + (st.phase==='faint'?0:0.05),0,1);
+  st.heat = lerp(st.heat, targetHeat, dt*2.5);
+
+  // expression
+  if(st.phase==='faint') st.expr='faint';
+  else if(st.f<0.16) st.expr='dizzy';
+  else if(st.heat>0.62) st.expr='hot';
+  else if(st.heat>0.34) st.expr='tired';
+  else st.expr='happy';
+
+  // token burn activity (near 1 when usage just grew)
+  st.burn = Math.max(0, st.burn - dt/4);   // fades out when usage stops
+  // hold at max for 1.5s after an increase (avoids flicker between polls)
+  if(st.lastTokAt > 0 && performance.now() - st.lastTokAt < 1500) st.burn = 1;
+
+  st.boil = Math.max(0, st.boil - dt*0.8);
+
+  // matrix code
+  if(st.burn > 0.02 && st.matrix.length === 0) initMatrix();
+  for(const c of st.matrix){
+    c.y += c.sp*(0.35+st.burn*1.5)*dt;
+    if(c.y > 210){ c.y = -rnd(20,90); c.chars = Array.from({length:c.n},()=>GLYPH[Math.floor(Math.random()*GLYPH.length)]); }
+    if(Math.random()<0.06) c.chars[Math.floor(Math.random()*c.n)] = GLYPH[Math.floor(Math.random()*GLYPH.length)];
+  }
+  // embers
+  if(st.burn > 0.15 && st.embers.length < 60 && Math.random() < 0.4+st.burn*0.5)
+    st.embers.push({x:rnd(45,105), y:rnd(140,168), vy:rnd(-70,-25), vx:rnd(-14,14), a:rnd(.45,.95), r:rnd(1,2.6)});
+  for(const e of st.embers){ e.y += e.vy*dt; e.x += e.vx*dt; e.vy *= 0.995; e.a -= dt*0.55; e.r *= 0.995; }
+  st.embers = st.embers.filter(e=>e.a>0.02);
+
+  // blinking
+  st.nextBlink -= dt;
+  if(st.nextBlink<=0){ st.blink=1; st.nextBlink = rnd(2.4,5.5); }
+  st.blink = Math.max(0, st.blink - dt*3.4);
+
+  // speech bubble
+  st.msgT -= dt;
+  if(st.msgT<=0){
+    st.msg=null;
+    if(st.phase==='alive'){
+      if(st.heat>0.75) say(T("hot"),2.0);
+      else if(st.heat>0.45) say(T("thirsty"),2.0);
+      else if(Math.random()<0.25) say(T("cheer"),1.8);
+    }
+  }
+
+  // effects
+  for(const s of st.steam){ s.y+=s.vy*dt; s.x+=s.vx*dt; s.life-=dt*0.85; s.r+=dt*1.6; }
+  st.steam = st.steam.filter(s=>s.life>0);
+  for(const s of st.sweat){ s.y+=s.vy*dt; s.vy+=90*dt; }
+  st.sweat = st.sweat.filter(s=>s.y<40);
+  for(const s of st.splash){ s.y+=s.vy*dt; s.vy+=260*dt; s.a-=dt*1.4; }
+  st.splash = st.splash.filter(s=>s.a>0);
+  for(const s of st.spark){ s.y+=s.vy*dt; s.a-=dt*1.1; s.r*=0.99; }
+  st.spark = st.spark.filter(s=>s.a>0);
+
+  // phase transitions
+  if(st.phase==='enter'){
+    if(st.pt>0.75){ st.phase='alive'; st.pt=0; }
+  } else if(st.phase==='faint'){
+    st.tilt = lerp(st.tilt, -1.5, dt*5.5);
+    if(st.pt>2.6){ st.phase='out'; st.pt=0; }
+  } else if(st.phase==='out'){
+    st.tilt = lerp(st.tilt, -2.2, dt*6); st.scaleY = lerp(st.scaleY,0.2,dt*5);
+    if(st.pt>0.45) startNew();
+  } else if(st.phase==='alive'){
+    st.tilt = lerp(st.tilt, Math.sin(t*1.4)*0.03 + (st.heat>0.6?Math.sin(t*9)*0.02:0), dt*4);
+  }
+}
+
+function startFaint(){
+  st.phase='faint'; st.pt=0; st.tilt=-0.35;
+  say(T("faint"),2.4);
+  for(let i=0;i<10;i++) st.splash.push({x:rnd(-20,20), y:rnd(-6,4), vy:rnd(-120,-40), a:.9});
+}
+function startNew(){
+  st.phase='enter'; st.pt=0; st.f=1; st.heat=0; st.tilt=0; st.scaleY=1;
+  if(SIM) st.bottleCount += 1;
+  st.ml += BOTTLE_ML;
+  for(let i=0;i<16;i++) st.spark.push({x:rnd(-26,26), y:rnd(-96,-30), vy:rnd(-40,-10), a:1, r:rnd(1.2,3)});
+  say(T("news"),1.6);
+}
+
+/* ── collapsed widget ───────────────────────────────────────── */
+function drawClosed(t){
+  let sc = 1, tx = 0, ty = 0;
+  if(DEMO){ tx = live.W - CO.w - 26; ty = live.H - CO.h - 26; }
+  else if(BG){
+    const fit = Math.min(live.W/CO.w, live.H/CO.h);
+    sc = clamp(fit * (live.W < 300 ? 0.98 : 0.72), 0.85, 1.75);
+    tx = (live.W - CO.w*sc)/2; ty = (live.H - CO.h*sc)/2 + 12*sc;
+  }
+  g.save();
+  g.translate(tx, ty);
+  g.scale(sc, sc);
+  const LW = CO.w, LH = CO.h;
+  const cx = LW/2, by = LH - 52;
+
+  // matrix code (behind character)
+  if(st.burn > 0.02 && st.matrix.length){
+    g.save();
+    g.font='700 8px "SF Mono",Menlo,monospace';
+    g.textAlign='left'; g.textBaseline='top';
+    for(const c of st.matrix){
+      for(let i=0;i<c.n;i++){
+        const yy=c.y-i*9;
+        if(yy<-8||yy>LH) continue;
+        const a=(1-i/c.n)*0.6*Math.min(1,st.burn*1.4);
+        g.fillStyle=`rgba(110,255,185,${a})`;
+        g.fillText(c.chars[i], c.x, yy);
+      }
+    }
+    g.restore();
+  }
+
+  // heat glow
+  if(st.burn > 0.1){
+    const hg=g.createRadialGradient(cx,by-40,4,cx,by-40,70);
+    hg.addColorStop(0,`rgba(255,120,60,${0.22*st.burn})`);
+    hg.addColorStop(1,"rgba(255,90,40,0)");
+    g.fillStyle=hg; g.beginPath(); g.arc(cx,by-40,70,0,7); g.fill();
+  }
+  let y = by;
+  if(st.phase==='enter'){
+    const p = clamp(st.pt/0.75,0,1);
+    y = by - (1-E.back(p))*90;
+  }
+  if(st.phase==='alive') y += Math.sin(t*2.1)*2.4 + Math.sin(t*34)*st.burn*1.6;
+  if(st.phase==='faint') y += Math.sin(t*14)*1.2;
+
+  // floor glow
+  g.save(); g.globalAlpha=.5;
+  const gl=g.createRadialGradient(cx,y,2,cx,y,58);
+  gl.addColorStop(0,`rgba(120,210,255,${0.16+0.20*(1-st.f)})`); gl.addColorStop(1,"rgba(120,210,255,0)");
+  g.fillStyle=gl; g.beginPath(); g.arc(cx,y,58,0,7); g.fill(); g.restore();
+
+  if(st.phase!=='faint' && st.phase!=='out') spawnSteam(cx, y-BH-14);
+  drawSteam();
+
+  drawBottle(cx, y, 1, {f:st.f, heat:st.heat, expr:st.expr, blink:st.blink,
+    tilt:st.tilt, scaleY:st.scaleY, sweat: st.heat>0.45 && st.phase!=='faint',
+    fan: st.heat>0.55 && st.phase==='alive'});
+
+  // matrix front layer (faint)
+  if(st.burn > 0.25 && st.matrix.length){
+    g.save();
+    g.font='700 8px "SF Mono",Menlo,monospace';
+    g.textAlign='left'; g.textBaseline='top';
+    for(const c of st.matrix){
+      for(let i=0;i<c.n;i++){
+        const yy=c.y-i*9;
+        if(yy<-8||yy>LH) continue;
+        const a=(1-i/c.n)*0.16*st.burn;
+        g.fillStyle=`rgba(150,255,205,${a})`;
+        g.fillText(c.chars[i], c.x, yy);
+      }
+    }
+    g.restore();
+  }
+
+  // embers (in front)
+  for(const e of st.embers){
+    g.beginPath(); g.arc(e.x, e.y, e.r, 0, 7);
+    g.fillStyle=`rgba(255,${Math.round(150+60*e.a)},80,${e.a})`; g.fill();
+  }
+
+  // droplets
+  for(const s of st.sweat){
+    g.beginPath(); g.ellipse(s.x, s.y, 1.8, 2.6, 0,0,7);
+    g.fillStyle=`rgba(150,220,255,${s.a})`; g.fill();
+  }
+  for(const s of st.splash){
+    g.beginPath(); g.arc(s.x, s.y, 2.2, 0, 7);
+    g.fillStyle=`rgba(150,225,255,${s.a})`; g.fill();
+  }
+  for(const s of st.spark){
+    g.beginPath(); g.arc(s.x, s.y, s.r, 0, 7);
+    g.fillStyle=`rgba(255,245,180,${s.a})`; g.fill();
+  }
+
+  // temperature badge
+  const temp = 22 + st.heat*78;
+  const by2 = by + 12;
+  if(st.phase!=='faint' && st.phase!=='out'){
+  const t1 = `${Math.round(temp)}°C`, t2 = BOT(st.bottleCount);
+  g.font='700 10.5px "NanumSquareRound",sans-serif'; const w1=g.measureText(t1).width;
+  g.font='700 10px "NanumSquareRound",sans-serif'; const w2=g.measureText(t2).width;
+  const bw = Math.max(58, w1 + w2 + 26);
+  g.save();
+  g.fillStyle="rgba(8,14,22,.62)"; rr(cx-bw/2, by2, bw, 17, 8); g.fill();
+  g.strokeStyle="rgba(150,210,255,.18)"; g.lineWidth=1; g.stroke();
+  g.restore();
+  const startX = cx - bw/2 + 9;
+  txt(t1, startX, by2+12, 10.5,
+      st.heat>0.6? "rgba(255,150,120,.98)" : "rgba(170,225,255,.95)", "700","left");
+  txt(t2, startX + w1 + 9, by2+12, 10, "rgba(255,235,190,.85)","700","left");
+  }
+
+  // speech bubble
+  if(st.msg){
+    const alpha = clamp(st.msgT*1.6,0,1);
+    g.save(); g.globalAlpha=alpha;
+    g.font='700 10.5px "NanumSquareRound",sans-serif';
+    const w = g.measureText(st.msg).width + 18;
+    const bx = clamp(cx, w/2+6, LW-w/2-6), byy = Math.max(26, y-BH-26);
+    g.fillStyle="rgba(255,255,255,.94)"; rr(bx-w/2, byy-14, w, 22, 9); g.fill();
+    g.beginPath(); g.moveTo(bx-4,byy+8); g.lineTo(bx+4,byy+8); g.lineTo(bx, byy+14); g.closePath(); g.fill();
+    txt(st.msg, bx, byy+2, 10.5, "#2b3a4c","700","center");
+    g.restore();
+  }
+  g.restore();
+}
+
+/* ── expanded panel ─────────────────────────────────────────── */
+function row(y, label, value, color){
+  txt(label, 124, y, 9.5, "rgba(150,185,215,.62)","400");
+  txt(value, 352, y+17, 17, color, "700", "right");
+  g.strokeStyle="rgba(120,170,215,.11)"; g.lineWidth=1;
+  g.beginPath(); g.moveTo(124,y+23); g.lineTo(352,y+23); g.stroke();
+}
+function txtW(s,size,weight){ g.font=`${weight} ${size}px "NanumSquareRound",sans-serif`; return g.measureText(s).width; }
+
+function drawOpen(t){
+  const w=OP.w, h=OP.h;
+  g.save();
+  g.shadowColor="rgba(0,0,0,.55)"; g.shadowBlur=32; g.shadowOffsetY=12;
+  const bg=g.createLinearGradient(0,0,w,h);
+  bg.addColorStop(0,"rgba(26,34,50,.97)"); bg.addColorStop(1,"rgba(11,17,26,.98)");
+  g.fillStyle=bg; rr(0,0,w,h,22); g.fill(); g.restore();
+  g.strokeStyle="rgba(130,205,255,.20)"; g.lineWidth=1; rr(.5,.5,w-1,h-1,22); g.stroke();
+  g.save(); rr(1,1,w-2,h-2,21); g.clip();
+
+  // header
+  txt(T("bottle"),20,30,15,"rgba(235,245,255,.97)","700");
+  txt(LIVE.date, w-20, 30, 10.5, "rgba(150,185,215,.6)","400","right");
+
+  // character
+  const cx=64, by=152;
+  let y=by; if(st.phase==='alive') y+=Math.sin(t*2.1)*1.6;
+  drawBottle(cx, y, 0.74, {f:st.f, heat:st.heat, expr:st.expr, blink:st.blink,
+    tilt:0, scaleY:st.scaleY, sweat:st.heat>0.45, fan:st.heat>0.55&&st.phase==='alive'});
+  const temp = 22 + st.heat*78;
+  txt(`${Math.round(temp)}°C`, cx, by+26, 13, st.heat>0.6?"rgba(255,150,120,.98)":"rgba(170,225,255,.95)","700","center");
+  txt(T("btemp"), cx, by+40, 9, "rgba(150,185,210,.55)","400","center");
+
+  // remaining water gauge
+  g.fillStyle="rgba(96,214,255,.10)"; rr(24, by+54, 80, 7, 4); g.fill();
+  g.fillStyle="rgba(96,214,255,.75)"; rr(24, by+54, Math.max(3,80*clamp(st.f,0,1)), 7, 4); g.fill();
+  txt(`${T("thisb")} ${Math.round(st.f*100)}%`, cx, by+78, 9.5, "rgba(150,215,245,.8)","400","center");
+
+  // stat rows
+  const TOK = LIVE.tokens||0, RAW = LIVE.raw_tokens||0;
+  row(48, T("weighted"), (TOK/1e6).toFixed(2)+" M", "rgba(198,236,255,.97)");
+  row(84, T("raw"), (RAW/1e6).toFixed(2)+" M", "rgba(160,205,235,.9)");
+  row(120, T("water"), Math.round(LIVE.ml).toLocaleString()+" ml", "rgba(120,222,255,.98)");
+  row(156, T("power"), Math.round(LIVE.wh).toLocaleString()+" Wh", "rgba(255,206,120,.98)");
+  row(192, T("exhaust"), st.temp.toFixed(1)+" °C", st.temp>40?"rgba(255,150,120,.95)":"rgba(190,225,245,.9)");
+
+  // bottle count + per-token note
+  txt(EQB(LIVE.bottles.toFixed(2)), 124, 236, 10.5, "rgba(160,222,255,.9)","700");
+  txt(T("perM"), 352, 236, 9.5, "rgba(150,185,215,.55)","400","right");
+
+  // conversion chips
+  g.fillStyle="rgba(96,214,255,.06)"; rr(16,248,w-32,60,12); g.fill();
+  txt(T("withheat"),26,266,9.5,"rgba(150,220,255,.75)","700");
+  const chips = [`${T("ramen")} ${LIVE.ramen}`, `${T("boil")} ${LIVE.boil1L}`, `${T("sauna")} ${LIVE.sauna}`];
+  let cxp=26;
+  for(const c of chips){
+    g.font='700 10px "NanumSquareRound",sans-serif';
+    const cw=g.measureText(c).width+14;
+    g.fillStyle="rgba(255,235,190,.09)"; rr(cxp,274,cw,20,10); g.fill();
+    g.strokeStyle="rgba(255,225,160,.20)"; g.lineWidth=1; g.stroke();
+    txt(c, cxp+cw/2, 288, 10, "rgba(255,232,180,.95)","700","center");
+    cxp += cw+6;
+  }
+  txt(`${T("phone")} ${LIVE.phone} · ${T("coffee")} ${LIVE.coffee}`, 26, 304, 9, "rgba(150,185,215,.5)","400");
+
+  // sources
+  const pt = LIVE.parts||{};
+  txt(`Claude Code ${fmt(pt.claude_code)} · Codex ${fmt(pt.codex)} · Hermes ${fmt(pt.hermes)}`, 20, 328, 9, "rgba(140,175,205,.55)","400");
+  txt(T("est") + " · " + T("local") + " · " + T("reset"), 20, 344, 9, "rgba(140,175,205,.4)","400");
+  if(st.lag !== null) txt(T("lag") + " " + st.lag.toFixed(1) + "s", 352, 344, 9, "rgba(120,220,180,.6)","700","right");
+
+  g.restore();
+  txt(T("close"), w-18, h-16, 9, "rgba(140,175,205,.45)","400","right");
+}
+function fmt(n){ if(!n) return "0"; return n>=1e6? (n/1e6).toFixed(1)+"M" : n>=1000? Math.round(n/1000)+"K" : String(n); }
+
+/* ── loop ──────────────────────────────────────────────────── */
+/* ── matrix code · embers ───────────────────────────────────── */
+const GLYPH = "01ｱｲｳｴｵｶｷｸｹｺABCDEF#$%&+=<>";
+function newCol(x){
+  return {x:x, y:rnd(-120,60), sp:rnd(16,44), n:9,
+    chars:Array.from({length:9},()=>GLYPH[Math.floor(Math.random()*GLYPH.length)])};
+}
+function initMatrix(){
+  st.matrix = [];
+  for(let i=0;i<5;i++) st.matrix.push(newCol(8 + i*8 + rnd(-2,2)));      // left side
+  for(let i=0;i<5;i++) st.matrix.push(newCol(108 + i*8 + rnd(-2,2)));     // right side
+}
+function burst(){
+  initMatrix();                       // splash code across the full height immediately
+  for(let i=0;i<18;i++)
+    st.embers.push({x:rnd(40,110), y:rnd(120,165), vy:rnd(-70,-25), vx:rnd(-16,16), a:rnd(.5,1), r:rnd(1.2,2.8)});
+  st.boil = 1;
+  say(T("burst"),1.6);
+}
+
+let last=performance.now(); window.__VT=performance.now(); window.__REC=false;
+window.__adv = (sec)=>{ const n=Math.max(1,Math.round(sec*30)); for(let i=0;i<n;i++){ window.__VT += 1000/30; tick(1/30,(window.__VT-st.t0)/1000); } last=window.__VT; };
+function frame(now){
+  if(window.__REC) now=window.__VT;
+  const dt=Math.min(.05,(now-last)/1000); last=now;
+  const t=(now-st.t0)/1000;
+  tick(dt,t);
+
+  g.clearRect(0,0,live.W,live.H);
+  if(PANEL){
+    const s2 = Math.min(1, live.W/OP.w, live.H/OP.h);
+    g.save();
+    g.translate((live.W-OP.w*s2)/2, (live.H-OP.h*s2)/2);
+    g.scale(s2, s2);
+    drawOpen(t); g.restore();
+  } else {
+    g.save(); drawClosed(t); g.restore();
+  }
+  // close button on hover
+  if(!PANEL && st.hover){
+    const bx=live.W-14, byy=14;
+    g.save();
+    g.beginPath(); g.arc(bx,byy,9,0,7);
+    g.fillStyle="rgba(10,16,24,.82)"; g.fill();
+    g.strokeStyle="rgba(255,130,130,.55)"; g.lineWidth=1; g.stroke();
+    g.strokeStyle="rgba(255,160,160,.95)"; g.lineWidth=1.7; g.lineCap="round";
+    g.beginPath();
+    g.moveTo(bx-3.2,byy-3.2); g.lineTo(bx+3.2,byy+3.2);
+    g.moveTo(bx+3.2,byy-3.2); g.lineTo(bx-3.2,byy+3.2);
+    g.stroke();
+    g.restore();
+  }
+
+  requestAnimationFrame(frame);
+}
+
+/* ── window drag (widget mode) ──────────────────────────────── */
+let dragging=null, dragMoved=false;
+if(ELECTRON && window.pet){
+  cv.addEventListener('mousedown', (e)=>{ dragging={sx:e.screenX, sy:e.screenY}; dragMoved=false; });
+  window.addEventListener('mousemove', (e)=>{
+    if(!dragging) return;
+    const dx=e.screenX-dragging.sx, dy=e.screenY-dragging.sy;
+    if(Math.abs(dx)+Math.abs(dy) > 2){
+      dragMoved = true;
+      window.pet.move(dx,dy);
+      dragging={sx:e.screenX, sy:e.screenY};
+    }
+  });
+  window.addEventListener('mouseup', ()=>{ dragging=null; });
+  cv.addEventListener('click', (e)=>{ if(dragMoved){ dragMoved=false; e.stopPropagation(); e.preventDefault(); } }, true);
+}
+
+/* ── hover · click ──────────────────────────────────────────── */
+cv.addEventListener('mouseenter', ()=>{ st.hover = true; });
+cv.addEventListener('mouseleave', ()=>{ st.hover = false; });
+cv.addEventListener('mousemove', (e)=>{
+  const r = cv.getBoundingClientRect();
+  st.hover = (e.clientX-r.left) > live.W-30 && (e.clientY-r.top) < 30 ? st.hover : st.hover;
+});
+cv.addEventListener('click', (e)=>{
+  const r = cv.getBoundingClientRect();
+  const x = e.clientX-r.left, y = e.clientY-r.top;
+  if(x > live.W-30 && y < 30 && st.hover){
+    if(ELECTRON && window.pet) window.pet.close(); else window.close();
+    return;
+  }
+  if(ELECTRON && window.pet){        // widget: expand/collapse in the same window
+    if(PANEL) window.pet.pet(); else window.pet.panel();
+    return;
+  }
+  if(PANEL){ window.close(); return; }
+  window.open('./?panel=1', 'aibottle-detail', 'width=404,height=410');
+});
+
+requestAnimationFrame(frame);
+
+// browser mode: re-read live.js periodically
+function reloadLive(){
+  if(DEMO || ELECTRON) return;
+  const el=document.createElement('script');
+  el.src='./live.js?t='+Date.now();
+  document.body.appendChild(el);
+  el.onload=()=>{
+    if(window.LIVE){
+      const d = (window.LIVE.tokens||0) - st.lastTok;
+      LIVE = Object.assign({}, DEF, window.LIVE||{});
+      st.lastTok = LIVE.tokens||0;
+      if(d > 0){ st.burn = Math.min(1, 0.4 + d/400000); burst(); }
+    }
+    el.remove();
+  };
+}
+window.__setLive = function(d){
+  if(!d) return;
+  const prevTok = LIVE.tokens||0;
+  const prevBot = Math.floor(LIVE.bottles||0);
+  LIVE = Object.assign({}, DEF, d||{});
+  st.lastTok = LIVE.tokens||0;
+  st.lag = d.ts ? Math.max(0, (Date.now()/1000 - d.ts)) : null;
+  const delta = (d.tokens||0) - prevTok;
+  // midnight reset: usage dropped sharply and bottle count fell
+  if((d.tokens||0) < prevTok*0.5 && Math.floor(d.bottles||0) < prevBot){
+    st.f = 1; st.bottleCount = 0; st.burn = 0; st.lastTokAt = 0;
+    st.heat = 0; st.temp = 31.5; st.embers = []; st.matrix = []; st.steam = [];
+    st.splash = []; st.droplets = []; st.bubbles = [];
+    st.phase = 'enter'; st.pt = 0; st.tilt = 0; st.scaleY = 1;
+    say(T("day"), 2.6);
+    return;
+  }
+  if(delta > 0){
+    st.burn = 1;
+    st.lastTokAt = performance.now();
+    burst();
+  } else if(d.active){          // log is growing = AI is working (react before totals update)
+    st.lastTokAt = performance.now();
+    st.burn = Math.max(st.burn, 0.55);
+  }
+  const nb = Math.floor(d.bottles||0);
+  if(nb > prevBot && st.phase==='alive'){ st.bottleCount = nb; startFaint(); st.prevB = nb; }
+};
+window.__refreshLive = reloadLive;
+setTimeout(reloadLive, 1200);
+setInterval(reloadLive, 15000);
+</script>
+</body>
+</html>
