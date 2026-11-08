@@ -3,7 +3,8 @@
 set -eu
 DIR="$HOME/aquabyte"
 REPO="chaympress/aquabyte"
-TARBALL="https://github.com/$REPO/releases/latest/download/aquabyte.tar.gz"
+VERSION="v0.1.1"
+TARBALL="https://github.com/$REPO/releases/download/$VERSION/aquabyte.tar.gz"
 
 echo ""
 echo "  🧴 Installing Aquabyte"
