@@ -318,7 +318,7 @@ function tick(dt, t){
   } else {
     // real data: the current bottle is empty by the fractional part of today's bottles
     const nb = Math.floor(LIVE.bottles);
-    if(nb > st.bottleCount && st.phase==='alive'){ st.bottleCount = nb; startFaint(); return; }
+    if(nb > st.bottleCount && st.bottleCount > 0 && st.phase==='alive'){ st.bottleCount = nb; startFaint(); return; }
     st.bottleCount = nb;
     const realF = 1 - (LIVE.bottles % 1);
     if(st.phase==='alive' || st.phase==='enter'){
@@ -757,7 +757,7 @@ window.__setLive = function(d){
     st.burn = Math.max(st.burn, 0.55);
   }
   const nb = Math.floor(d.bottles||0);
-  if(nb > prevBot && st.phase==='alive'){ st.bottleCount = nb; startFaint(); st.prevB = nb; }
+  if(nb > prevBot && prevBot > 0 && st.phase==='alive'){ st.bottleCount = nb; startFaint(); }
 };
 window.__refreshLive = reloadLive;
 setTimeout(reloadLive, 1200);
